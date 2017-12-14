@@ -1,10 +1,10 @@
-var React = require('react');
-var Router = require('react-router');
-var Link = Router.Link;
-var joinClasses = require("react/lib/joinClasses");
+import React from 'react';
+import {Link} from 'react-router';
+import classnames from 'classnames';
+import Duration from './Duration';
+import TimeSince from './TimeSince';
 
-var Duration = require('./Duration');
-var TimeSince = require('./TimeSince');
+import { browserHistory } from 'react-router';
 
 var Progress = React.createClass({
   propTypes: {
@@ -19,7 +19,9 @@ var Progress = React.createClass({
 });
 
 var TaskSummary = React.createClass({
-  mixins: [Router.Navigation],
+   contextTypes: {
+    router: React.PropTypes.object.isRequired
+  },
 
   taskInProgress(task) {
     return task.status == 'in_progress' || task.status == 'pending';
@@ -53,22 +55,19 @@ var TaskSummary = React.createClass({
         return 'In progress';
     }
   },
-
   gotoTask(e) {
     if (e) {
       e.preventDefault();
     }
 
-    this.transitionTo('taskDetails', {
-      app: this.props.task.app.name,
-      env: this.props.task.environment,
-      number: this.props.task.number
-    });
+    let {app, environment, number} = this.props.task;
+
+    browserHistory.push(`/deploys/${app.name}/${environment}/${number}`);
   },
 
   render() {
     var task = this.props.task;
-    var className = 'task';
+    var className = 'deploy';
     if (this.taskInProgress(task)) {
       className += ' active';
     } else {
@@ -81,7 +80,7 @@ var TaskSummary = React.createClass({
     }
 
     return (
-      <div className={joinClasses(this.props.className, className)}
+      <div className={classnames(this.props.className, className)}
            onClick={this.gotoTask}>
         <Progress value={this.getEstimatedProgress(task)} />
         <h3>

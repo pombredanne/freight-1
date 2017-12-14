@@ -3,6 +3,7 @@
 var path = require("path"),
     webpack = require("webpack");
 var ExtractTextPlugin = require("extract-text-webpack-plugin");
+var CopyWebpackPlugin = require('copy-webpack-plugin');
 
 module.exports = {
   context: __dirname + "/static",
@@ -11,10 +12,9 @@ module.exports = {
     "app": "./main",
     "vendor": [
       "ansi_up",
-      "babel-core/polyfill",
+      "babel-polyfill",
       "jquery",
       "moment",
-      "react/addons",
       "react-router"
     ]
   },
@@ -25,16 +25,18 @@ module.exports = {
         loader: "babel-loader"
       },
       {
-        test: /\.json$/,
-        loader: "json-loader"
-      },
-      {
         test: /\.less$/,
-        loader: ExtractTextPlugin.extract("style-loader", "css-loader!less-loader")
+        loader: ExtractTextPlugin.extract({
+          fallback: "style-loader",
+          use: "css-loader!less-loader"
+        })
       },
       {
         test: /\.css$/,
-        loader: ExtractTextPlugin.extract("style-loader", "css-loader")
+        loader: ExtractTextPlugin.extract({
+          fallback: "style-loader",
+          use: "css-loader"
+        })
       },
       // inline base64 URLs for <=8k images, direct URLs for the rest
       {
@@ -44,24 +46,53 @@ module.exports = {
     ]
   },
   plugins: [
-    new ExtractTextPlugin("styles.css", {
+    function() {
+      this.plugin("done", function(stats) {
+        var app = stats.toJson({
+          assetsSort: true
+        }).assets[1].name
+
+        var vendor = stats.toJson({
+          assetsSort: true
+        }).assets[0].name
+
+        var styles = stats.toJson({
+          assetsSort: true
+        }).assetsByChunkName.styles[1]
+
+        var newObj = {
+          "assets": {
+            "vendor.js": vendor,
+            "app.js": app,
+            "styles.css": styles
+          },
+          "publicPath": "/static/"
+        };
+        require("fs").writeFileSync(
+          path.join(__dirname, "/", "stats.json"),
+          JSON.stringify(newObj));
+      });
+    },
+    new ExtractTextPlugin({
+      filename: 'styles.[chunkhash].css',
       allChunks: true
     }),
-    new webpack.optimize.CommonsChunkPlugin("vendor", "vendor.js"),
-    new webpack.optimize.DedupePlugin(),
     new webpack.ProvidePlugin({
         $: 'jquery',
         jQuery: 'jquery',
-    })
+    }),
+    new CopyWebpackPlugin([
+        {from: 'favicon.png'},
+    ])
   ],
   resolve: {
-    modulesDirectories: ["node_modules"],
-    extensions: ["", ".jsx", ".js", ".json"]
+    modules: ["node_modules"],
+    extensions: [".jsx", ".js", ".json"]
   },
   output: {
     publicPath: "/dist/",
     path: __dirname + "/dist",
-    filename: "[name].js",
+    filename: "[name].[chunkhash].js",
   },
   devtool: 'source-map'
 };

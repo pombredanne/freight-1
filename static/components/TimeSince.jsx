@@ -1,5 +1,4 @@
-/*** @jsx React.DOM */
-var React = require("react");
+var React  = require("react");
 var moment = require("moment");
 
 var TimeSince = React.createClass({

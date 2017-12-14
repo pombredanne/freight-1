@@ -10,7 +10,8 @@ from freight.api.serializer import serialize
 from freight.config import db, redis
 from freight.exceptions import CheckError, CheckPending
 from freight.models import (
-    App, Repository, Task, TaskSequence, TaskStatus, User
+    App, Repository, Task, Deploy, DeploySequence, TaskStatus, User,
+    TaskConfig, TaskConfigType,
 )
 from freight.notifiers import NotifierEvent
 from freight.notifiers.utils import send_task_notifications
@@ -19,9 +20,9 @@ from freight.utils.redis import lock
 from freight.utils.workspace import Workspace
 
 
-class TaskIndexApiView(ApiView):
+class DeployIndexApiView(ApiView):
     def _get_internal_ref(self, app, env, ref):
-        # find the most recent green build for this app
+        # find the most recent green deploy for this app
         if ref == ':current':
             return app.get_current_sha(env)
 
@@ -44,7 +45,7 @@ class TaskIndexApiView(ApiView):
 
     def get(self):
         """
-        Retrieve a list of tasks.
+        Retrieve a list of deploys.
 
         If any parameters are invalid the result will simply be an empty list.
         """
@@ -56,7 +57,7 @@ class TaskIndexApiView(ApiView):
             app = App.query.filter(App.name == args.app).first()
             if not app:
                 return self.respond([])
-            qs_filters.append(Task.app_id == app.id)
+            qs_filters.append(Deploy.app_id == app.id)
 
         if args.user:
             user = User.query.filter(User.name == args.user).first()
@@ -65,7 +66,7 @@ class TaskIndexApiView(ApiView):
             qs_filters.append(Task.user_id == user.id)
 
         if args.env:
-            qs_filters.append(Task.environment == args.env)
+            qs_filters.append(Deploy.environment == args.env)
 
         if args.ref:
             qs_filters.append(Task.ref == args.ref)
@@ -74,9 +75,9 @@ class TaskIndexApiView(ApiView):
             status_list = map(TaskStatus.label_to_id, args.status)
             qs_filters.append(Task.status.in_(status_list))
 
-        task_qs = Task.query.filter(*qs_filters).order_by(Task.id.desc())
+        deploy_qs = Deploy.query.filter(*qs_filters).order_by(Deploy.id.desc())
 
-        return self.paginate(task_qs, on_results=serialize)
+        return self.paginate(deploy_qs, on_results=serialize)
 
     post_parser = reqparse.RequestParser()
     post_parser.add_argument('app', required=True)
@@ -114,6 +115,13 @@ class TaskIndexApiView(ApiView):
         if not app:
             return self.error('Invalid app', name='invalid_resource', status_code=404)
 
+        deploy_config = TaskConfig.query.filter(
+            TaskConfig.app_id == app.id,
+            TaskConfig.type == TaskConfigType.deploy,
+        ).first()
+        if not deploy_config:
+            return self.error('Missing deploy config', name='missing_conf', status_code=404)
+
         params = None
 
         repo = Repository.query.get(app.repository_id)
@@ -149,7 +157,7 @@ class TaskIndexApiView(ApiView):
             params = args.params
 
         if not args.force:
-            for check_config in app.checks:
+            for check_config in deploy_config.checks:
                 check = checks.get(check_config['type'])
                 try:
                     check.check(app, sha, check_config['config'])
@@ -161,28 +169,36 @@ class TaskIndexApiView(ApiView):
                         name='check_failed',
                     )
 
-        with lock(redis, 'task:create:{}'.format(app.id), timeout=5):
+        with lock(redis, 'deploy:create:{}'.format(app.id), timeout=5):
             task = Task(
                 app_id=app.id,
-                environment=args.env,
-                number=TaskSequence.get_clause(app.id, args.env),
                 # TODO(dcramer): ref should default based on app config
                 ref=ref,
                 sha=sha,
                 params=params,
                 status=TaskStatus.pending,
                 user_id=user.id,
-                provider=app.provider,
+                provider=deploy_config.provider,
                 data={
                     'force': args.force,
-                    'provider_config': app.provider_config,
-                    'notifiers': app.notifiers,
-                    'checks': app.checks,
+                    'provider_config': deploy_config.provider_config,
+                    'notifiers': deploy_config.notifiers,
+                    'checks': deploy_config.checks,
                 },
             )
             db.session.add(task)
+            db.session.flush()
+            db.session.refresh(task)
+
+            deploy = Deploy(
+                task_id=task.id,
+                app_id=app.id,
+                environment=args.env,
+                number=DeploySequence.get_clause(app.id, args.env),
+            )
+            db.session.add(deploy)
             db.session.commit()
 
             send_task_notifications(task, NotifierEvent.TASK_QUEUED)
 
-        return self.respond(serialize(task), status_code=201)
+        return self.respond(serialize(deploy), status_code=201)

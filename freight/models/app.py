@@ -15,35 +15,11 @@ class App(db.Model):
     Example App configuration:
 
     {
-        "provider_config": {
-            "timeout": 1200,
-            "command": "bin/fab --colorize-errors -a -i {ssh_key} -R {environment} deploy:branch_name={sha}"
-        },
-        "provider": "shell",
         "environments": {
             "production": {
                 "default_ref": "master"
             }
-        },
-        "checks": [
-            {
-                "type": "github",
-                "config": {
-                    "contexts": [
-                        "ci/circleci"
-                    ],
-                    "repo": "getsentry/getsentry"
-                }
-            }
-        ],
-        "notifiers": [
-            {
-                "type": "slack",
-                "config": {
-                    "webhook_url": "..."
-                }
-            }
-        ]
+        }
     }
     """
 
@@ -62,20 +38,16 @@ class App(db.Model):
     date_created = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     @property
-    def checks(self):
-        return self.data.get('checks', [])
-
-    @property
-    def notifiers(self):
-        return self.data.get('notifiers', [])
-
-    @property
-    def provider_config(self):
-        return self.data.get('provider_config', {})
-
-    @property
     def environments(self):
         return self.data.get('environments', {})
+
+    @property
+    def deploy_config(self):
+        from freight.models import TaskConfig, TaskConfigType
+        return TaskConfig.query.filter(
+            TaskConfig.app_id == self.id,
+            TaskConfig.type == TaskConfigType.deploy,
+        ).first()
 
     def get_default_ref(self, env):
         data = self.environments.get(env)
@@ -84,20 +56,21 @@ class App(db.Model):
         return data.get('default_ref', DEFAULT_REF)
 
     def get_current_sha(self, env):
-        from freight.models import Task, TaskStatus
+        from freight.models import Task, Deploy, TaskStatus
 
         return db.session.query(
             Task.sha,
         ).filter(
+            Deploy.task_id == Task.id,
             Task.app_id == self.id,
-            Task.environment == env,
+            Deploy.environment == env,
             Task.status == TaskStatus.finished,
         ).order_by(
-            Task.number.desc(),
+            Deploy.number.desc(),
         ).limit(1).scalar()
 
     def get_previous_sha(self, env, current_sha=None):
-        from freight.models import Task, TaskStatus
+        from freight.models import Task, Deploy, TaskStatus
 
         if current_sha is None:
             current_sha = self.get_current_sha(env)
@@ -108,10 +81,11 @@ class App(db.Model):
         return db.session.query(
             Task.sha,
         ).filter(
+            Deploy.task_id == Task.id,
             Task.app_id == self.id,
-            Task.environment == env,
+            Deploy.environment == env,
             Task.status == TaskStatus.finished,
             Task.sha != current_sha,
         ).order_by(
-            Task.number.desc(),
+            Deploy.number.desc(),
         ).limit(1).scalar()

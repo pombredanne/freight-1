@@ -3,6 +3,7 @@ from __future__ import absolute_import
 import flask
 import os
 import logging
+from urlparse import urlunsplit
 
 from flask_heroku import Heroku
 from flask_redis import Redis
@@ -10,6 +11,7 @@ from flask_sslify import SSLify
 from flask_sqlalchemy import SQLAlchemy
 from raven.contrib.flask import Sentry
 from werkzeug.contrib.fixers import ProxyFix
+from flask_webpack import Webpack
 
 from freight.queue import Queue
 from freight.api.controller import ApiController
@@ -22,6 +24,7 @@ heroku = Heroku()
 redis = Redis()
 sentry = Sentry(logging=True, level=logging.WARN)
 queue = Queue()
+webpack = Webpack()
 
 
 def configure_logging(app):
@@ -64,6 +67,8 @@ def create_app(_read_config=True, **config):
     app.config['DEFAULT_READ_TIMEOUT'] = int(os.environ.get('DEFAULT_READ_TIMEOUT', 600))
 
     app.config['LOG_LEVEL'] = os.environ.get('LOG_LEVEL', 'INFO' if config.get('DEBUG') else 'ERROR')
+
+    app.config['DEV'] = config.get('DEV', False)
 
     # Currently authentication requires Google
     app.config['GOOGLE_CLIENT_ID'] = os.environ.get('GOOGLE_CLIENT_ID')
@@ -116,6 +121,9 @@ def create_app(_read_config=True, **config):
     # Pull in Heroku configuration
     heroku.init_app(app)
 
+    # Pull in environment variables from docker
+    docker_init_app(app)
+
     if 'DYNO' in os.environ:
         # XXX: the released version of flask-sslify does not support init_app
         SSLify(app)
@@ -145,6 +153,7 @@ def create_app(_read_config=True, **config):
     configure_queue(app)
     configure_sqlalchemy(app)
     configure_web_routes(app)
+    configure_webpack(app)
 
     return app
 
@@ -154,24 +163,30 @@ def configure_api(app):
     from freight.api.app_details import AppDetailsApiView
     from freight.api.app_index import AppIndexApiView
     from freight.api.stats import StatsApiView
-    from freight.api.task_details import TaskDetailsApiView
-    from freight.api.task_index import TaskIndexApiView
-    from freight.api.task_log import TaskLogApiView
+    from freight.api.deploy_details import DeployDetailsApiView
+    from freight.api.deploy_index import DeployIndexApiView
+    from freight.api.deploy_log import DeployLogApiView
 
     api.add_resource(AppIndexApiView, '/apps/')
     api.add_resource(AppDetailsApiView, '/apps/<app>/')
     api.add_resource(StatsApiView, '/stats/')
-    api.add_resource(TaskIndexApiView, '/tasks/')
+    api.add_resource(DeployIndexApiView, '/tasks/',
+                     endpoint='deploy-index-deprecated')
+    api.add_resource(DeployIndexApiView, '/deploys/')
 
     # old style
-    api.add_resource(TaskDetailsApiView, '/tasks/<task_id>/')
-    api.add_resource(TaskLogApiView, '/tasks/<task_id>/log/')
+    api.add_resource(DeployDetailsApiView, '/deploys/<deploy_id>/')
+    api.add_resource(DeployLogApiView, '/deploys/<deploy_id>/log/')
 
     # new style
-    api.add_resource(TaskDetailsApiView, '/tasks/<app>/<env>/<number>/',
-                     endpoint='task-details')
-    api.add_resource(TaskLogApiView, '/tasks/<app>/<env>/<number>/log/',
-                     endpoint='task-log')
+    api.add_resource(DeployDetailsApiView, '/tasks/<app>/<env>/<number>/',
+                     endpoint='deploy-details-deprecated')
+    api.add_resource(DeployLogApiView, '/tasks/<app>/<env>/<number>/log/',
+                     endpoint='deploy-log-deprecated')
+    api.add_resource(DeployDetailsApiView, '/deploys/<app>/<env>/<number>/',
+                     endpoint='deploy-details')
+    api.add_resource(DeployLogApiView, '/deploys/<app>/<env>/<number>/log/',
+                     endpoint='deploy-log')
 
     # catchall should be the last resource
     api.add_resource(ApiCatchall, '/<path:path>')
@@ -206,17 +221,25 @@ def configure_sqlalchemy(app):
     db.init_app(app)
 
 
+def configure_webpack(app):
+    app.config['WEBPACK_MANIFEST_PATH'] = '../stats.json'
+    webpack.init_app(app)
+
+
 def configure_web_routes(app):
     from freight.web.auth import AuthorizedView, LoginView, LogoutView
     from freight.web.index import IndexView
     from freight.web.static import StaticView
+    from freight.web.webhooks import WebhooksView
 
     static_root = os.path.join(PROJECT_ROOT, 'dist')
 
     app.add_url_rule(
         '/static/<path:filename>',
         view_func=StaticView.as_view(b'static', root=static_root))
-
+    app.add_url_rule(
+        '/webhooks/<hook>/<action>/<app>/<env>/<digest>/',
+        view_func=WebhooksView.as_view(b'webhooks'))
     app.add_url_rule(
         '/auth/login/',
         view_func=LoginView.as_view(b'login', authorized_url='authorized'))
@@ -230,3 +253,27 @@ def configure_web_routes(app):
     index_view = IndexView.as_view(b'index', login_url='login')
     app.add_url_rule('/', view_func=index_view)
     app.add_url_rule('/<path:path>', view_func=index_view)
+
+
+def docker_init_app(app):
+    if 'POSTGRES_PORT_5432_TCP_ADDR' in os.environ:
+        scheme = 'postgresql'
+        host = os.environ['POSTGRES_PORT_5432_TCP_ADDR']
+        user = os.environ.get('POSTGRES_ENV_POSTGRES_USER') or 'postgres'
+        password = os.environ.get('POSTGRES_ENV_POSTGRES_PASSWORD')
+        db = os.environ.get('POSTGRES_ENV_POSTGRES_DB') or user
+        if user and password:
+            netloc = '%s:%s@%s' % (user, password, host)
+        elif user:
+            netloc = '%s@%s' % (user, host)
+        else:
+            netloc = host
+        if not app.config.get('SQLALCHEMY_DATABASE_URI'):
+            app.config['SQLALCHEMY_DATABASE_URI'] = urlunsplit((scheme, netloc, db, None, None))
+
+    if 'REDIS_PORT_6379_TCP_ADDR' in os.environ:
+        scheme = 'redis'
+        host = os.environ['REDIS_PORT_6379_TCP_ADDR']
+        port = 6379
+        netloc = '%s:%d' % (host, port)
+        app.config.setdefault('REDIS_URL', urlunsplit((scheme, netloc, '', None, None)))

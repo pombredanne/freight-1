@@ -24,6 +24,8 @@ class GitHubContextCheckTest(GitHubCheckBase):
             {
                 "state": "failed",
                 "context": "travisci",
+                "description": "we didn't it",
+                "target_url": "example.com/build",
             }
         ])
 
@@ -41,6 +43,8 @@ class GitHubContextCheckTest(GitHubCheckBase):
             {
                 "state": "pending",
                 "context": "travisci",
+                "description": "we're doing it",
+                "target_url": "example.com/build",
             }
         ])
 
@@ -58,6 +62,8 @@ class GitHubContextCheckTest(GitHubCheckBase):
             {
                 "state": "success",
                 "context": "other",
+                "description": "we did it",
+                "target_url": "example.com/build",
             }
         ])
 
@@ -75,6 +81,8 @@ class GitHubContextCheckTest(GitHubCheckBase):
             {
                 "state": "success",
                 "context": "travisci",
+                "description": "we did it",
+                "target_url": "example.com/build",
             }
         ])
 
@@ -103,6 +111,8 @@ class GitHubContextCheckTest(GitHubCheckBase):
             {
                 "state": "failing",
                 "context": "travisci",
+                "description": "we didn't do it",
+                "target_url": "example.com/build",
             }
         ])
 
@@ -113,3 +123,27 @@ class GitHubContextCheckTest(GitHubCheckBase):
 
         with pytest.raises(CheckFailed):
             self.check.check(self.app, 'abcdefg', config)
+
+    @responses.activate
+    def test_partial_failed_context(self):
+        body = json.dumps([
+            {
+                "state": "success",
+                "context": "travisci",
+                "description": "we did it",
+                "target_url": "example.com/build",
+            },
+            {
+                "state": "failing",
+                "context": "somethingelse",
+                "description": "we didn't do it",
+                "target_url": "example.com/build",
+            },
+        ])
+
+        responses.add(responses.GET, 'https://api.github.com/repos/getsentry/freight/commits/abcdefg/statuses',
+                      body=body)
+
+        config = {'contexts': ['travisci'], 'repo': 'getsentry/freight'}
+
+        self.check.check(self.app, 'abcdefg', config)

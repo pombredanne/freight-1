@@ -10,7 +10,7 @@ from freight.exceptions import CheckFailed, CheckPending
 
 from .base import Check
 
-ERR_CHECK = '{} context is {}'
+ERR_CHECK = '[{state}] {context}: {description} ({target_url})'
 ERR_MISSING_CONTEXT = '{} context was not found'
 
 
@@ -32,7 +32,8 @@ class GitHubContextCheck(Check):
             config.get('api_root') or current_app.config['GITHUB_API_ROOT']
         ).rstrip('/')
 
-        contexts = set(config.get('contexts') or [])
+        all_contexts = set(config.get('contexts') or [])
+        contexts = all_contexts.copy()
         repo = config['repo']
 
         url = '{api_root}/repos/{repo}/commits/{ref}/statuses'.format(
@@ -54,6 +55,8 @@ class GitHubContextCheck(Check):
 
         valid_contexts = set()
         for data in context_list:
+            if all_contexts and data['context'] not in all_contexts:
+                continue
             if data['state'] == 'success':
                 valid_contexts.add(data['context'])
                 try:
@@ -65,9 +68,9 @@ class GitHubContextCheck(Check):
             if contexts and data['context'] not in contexts:
                 continue
             if data['state'] == 'pending':
-                raise CheckPending(ERR_CHECK.format(data['context'], data['state']))
+                raise CheckPending(ERR_CHECK.format(**data))
             elif data['state'] != 'success':
-                raise CheckFailed(ERR_CHECK.format(data['context'], data['state']))
+                raise CheckFailed(ERR_CHECK.format(**data))
             contexts.remove(data['context'])
 
         if contexts:
